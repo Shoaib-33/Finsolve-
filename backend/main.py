@@ -12,13 +12,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 from dotenv import load_dotenv
+from langchain_openai import ChatOpenAI
 
 load_dotenv()
 
-if not os.getenv("GEMINI_API_KEY"):
-    raise ValueError("❌ GEMINI_API_KEY not found in environment. Check your .env file.")
+if not os.getenv("OPENROUTER_API_KEY"):
+    raise ValueError("❌ OPENROUTER_API_KEY not found in environment. Check your .env file.")
 
-from langchain_google_genai import ChatGoogleGenerativeAI
 from backend.services.auth import authenticate
 from backend.services.rag import hybrid_retrieve, rerank, rewrite_query, check_faithfulness
 from backend.services.sql import init_db, run_sql, get_columns
@@ -37,23 +37,27 @@ app.add_middleware(
 
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
-app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
+static_dir = os.path.join(BASE_DIR, "static")
+if os.path.exists(static_dir):
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 init_db()
 
 # In-memory sessions {token: {username, role, history}}
 sessions: dict = {}
 
-
+#openai_api_key=os.getenv("OPENROUTER_API_KEY")
 # -------------------------------
 # LLM Factory
 # -------------------------------
 def get_llm():
-    return ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash-lite",
+    return ChatOpenAI(
+        model="google/gemini-2.5-flash-lite",
         temperature=0,
-        google_api_key=os.getenv("GEMINI_API_KEY")
+        openai_api_key=os.getenv("OPENROUTER_API_KEY"),
+        openai_api_base="https://openrouter.ai/api/v1",
     )
+
 
 
 # -------------------------------
@@ -66,7 +70,6 @@ def is_sql_query(query: str, llm) -> bool:
     Returns True if SQL is needed, False otherwise.
     """
     classification_prompt = f"""You are a query router. Determine if the following user query requires structured data retrieval (SQL) or unstructured document retrieval (RAG).
-
 A query requires SQL if it involves:
 - Aggregations (count, sum, average, total, min, max)
 - Filtering or comparisons on structured fields (salary > X, age < Y, department = Z)
@@ -74,15 +77,12 @@ A query requires SQL if it involves:
 - Sorting or ranking employees or records
 - Any analytical or reporting question on tabular employee data
 - Questions like "show me all employees who...", "find employees where...", "how many employees..."
-
 A query requires RAG if it involves:
 - Policy questions (leave policy, HR policies, company guidelines)
 - General knowledge or explanations
 - Summaries of documents or reports
 - Questions that do not require querying a structured employee table
-
 Respond with ONLY one word: "SQL" or "RAG". No explanation, no punctuation.
-
 Query: {query}"""
 
     try:
@@ -214,19 +214,15 @@ User query: {query}"""
     # Step 5 — Generate Answer
     prompt = f"""You are an AI assistant at FinSolve Technologies. The user has the role: {role}.
 Do not answer questions outside of the user's role scope.
-
 Conversation History:
 {history_text}
-
 Instructions:
 1) If the context does not contain relevant information, respond with "I don't have that information."
 2) If the question is outside your role, respond with "I'm not authorized to answer that."
 3) Always keep answers concise and to the point.
 4) Do not make up answers outside of the provided context.
-
 Context:
 {context}
-
 Question: {query}"""
 
     answer = llm.invoke(prompt).content
