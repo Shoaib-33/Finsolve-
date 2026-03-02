@@ -130,6 +130,23 @@ The API will be available at `http://localhost:8000`.
 
 ---
 
+## Dockerized Deployment
+
+The FinSolve RAG API is fully **dockerized**, providing a reproducible and isolated environment for development and production. This ensures that the LLM, vector store, retrieval pipelines, and API run consistently across machines.
+
+### Build Docker Image
+
+```bash
+docker build -t finsolve-rag .
+```
+Run Container
+
+```
+docker run -p 8000:8000 -v ${PWD}/chroma_db:/app/chroma_db finsolve-rag
+```
+
+
+
 ## API Endpoints
 
 | Method | Endpoint | Description |
