@@ -23,6 +23,33 @@ FinSolve RAG API combines hybrid document retrieval with SQL-based structured qu
 
 ---
 
+## Working Structure
+```
+This is the main pipeline. Here's the full flow:
+
+User sends query
+      ↓
+Is it SQL?  ──YES──▶  HR only? ──YES──▶ LLM writes SQL ──▶ Run it ──▶ Return table
+      │                  └──NO──▶ 403 Forbidden
+      NO
+      ↓
+Rewrite query (make it search-friendly)
+      ↓
+Hybrid Retrieve (BM25 + Dense, filtered by role)
+      ↓
+Rerank top 5 docs
+      ↓
+Build prompt with context + chat history
+      ↓
+LLM generates answer
+      ↓
+Hallucination check (is answer faithful to context?)
+      ↓
+Save to session history
+      ↓
+Return answer + sources + faithfulness flag
+```
+
 ## Architecture
 
 ```
