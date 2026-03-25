@@ -1,0 +1,89 @@
+# ========================
+# Environment & Secrets
+# ========================
+.env
+.env.*
+*.env
+secrets.json
+config.local.*
+
+# ========================
+# Python
+# ========================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+pip-wheel-metadata/
+
+# ========================
+# Virtual Environment
+# ========================
+venv/
+env/
+.venv/
+ENV/
+
+# ========================
+# Database & Vector Store
+# ========================
+*.db
+*.sqlite
+*.sqlite3
+chroma_db/
+
+# ========================
+# Docker
+# ========================
+docker-compose.override.yml
+
+# ========================
+# Logs
+# ========================
+*.log
+logs/
+
+# ========================
+# OS Files
+# ========================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ========================
+# IDE / Editor
+# ========================
+.vscode/
+.idea/
+*.swp
+*.swo
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# ========================
+# Jupyter Notebooks
+# ========================
+.ipynb_checkpoints/
+*.ipynb
+
+# ========================
+# Testing & Coverage
+# ========================
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# ========================
+# Misc
+# ========================
+*.bak
+*.tmp
+*.temp

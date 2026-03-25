@@ -7,8 +7,30 @@ services:
       - "8000:8000"
     volumes:
       - ./resources:/app/resources
-      - ./chroma_db:/app/chroma_db
       - ./employees.db:/app/employees.db
+    env_file:
+      - .env
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    depends_on:
+      - app
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
     environment:
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    depends_on:
+      - prometheus
     restart: unless-stopped
