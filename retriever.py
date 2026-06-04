@@ -1,15 +1,27 @@
 import os
+from pathlib import Path
+
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
+
 from langchain_community.embeddings import SentenceTransformerEmbeddings
 from langchain_community.vectorstores import Chroma
+from chromadb.config import Settings
+from backend.services.cache import CachedEmbeddings
 
-CHROMA_DIR = "chroma_db"
+BASE_DIR = Path(__file__).resolve().parent
+CHROMA_DIR = str(BASE_DIR / "chroma_db")
+EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 
-embedding_model = SentenceTransformerEmbeddings(model_name="all-MiniLM-L6-v2")
+embedding_model = CachedEmbeddings(
+    SentenceTransformerEmbeddings(model_name=EMBEDDING_MODEL),
+    model_cache_id=EMBEDDING_MODEL,
+)
 
 db = Chroma(
     persist_directory=CHROMA_DIR,
     embedding_function=embedding_model,
-    collection_name="company_docs"
+    collection_name="company_docs",
+    client_settings=Settings(anonymized_telemetry=False),
 )
 
 # -------------------------------

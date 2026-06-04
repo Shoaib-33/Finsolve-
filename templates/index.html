@@ -283,6 +283,29 @@ html, body {
   border-bottom-left-radius: 3px;
 }
 
+.bubble.bot p {
+  margin: 0 0 10px;
+}
+
+.bubble.bot p:last-child {
+  margin-bottom: 0;
+}
+
+.bubble.bot ul {
+  margin: 8px 0 0;
+  padding-left: 20px;
+}
+
+.bubble.bot li {
+  margin: 7px 0;
+  padding-left: 2px;
+}
+
+.bubble.bot strong {
+  color: #f4f7ff;
+  font-weight: 700;
+}
+
 /* Meta line (sources, rewritten query) */
 .msg-meta {
   font-size: 11px;
@@ -312,6 +335,34 @@ html, body {
   font-size: 12px;
   color: var(--warn);
   max-width: 68%;
+}
+
+.approval-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.approval-btn {
+  border: 1px solid var(--border2);
+  border-radius: 8px;
+  padding: 7px 11px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--text);
+  background: var(--surface2);
+  cursor: pointer;
+}
+
+.approval-btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+.approval-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 /* Table */
@@ -724,9 +775,17 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 
       if (!res.ok) {
         appendWarning("⚠️ " + (data.detail || "Something went wrong."));
+      } else if (data.type === "sql_approval") {
+        if (data.security && data.security.warnings && data.security.warnings.length) {
+          appendMeta(data.security.warnings);
+        }
+        appendSqlApproval(data);
       } else if (data.type === "table") {
         appendTable(data.columns, data.rows, data.query);
       } else {
+        if (data.security && data.security.warnings && data.security.warnings.length) {
+          appendMeta(data.security.warnings);
+        }
         if (data.rewritten_query && data.rewritten_query !== query) {
           appendMeta([`🔍 ${data.rewritten_query}`]);
         }
@@ -782,7 +841,7 @@ tr:hover td { background: rgba(255,255,255,0.02); }
     row.className = "msg-row bot";
     row.innerHTML = `
       <div class="msg-label">FinSolve Assistant</div>
-      <div class="bubble bot">${esc(text)}</div>`;
+      <div class="bubble bot">${renderBotText(text)}</div>`;
     area.appendChild(row);
   }
 
@@ -807,7 +866,7 @@ tr:hover td { background: rgba(255,255,255,0.02); }
     const row  = document.createElement("div");
     row.className = "msg-row bot";
 
-    let html = `<div class="msg-label">FinSolve Assistant · SQL Result</div>
+    let html = `<div class="msg-label">FinSolve Assistant - SQL Result</div>
                 <div class="table-wrap"><table>
                 <tr>${columns.map(c => `<th>${esc(c)}</th>`).join("")}</tr>`;
     rows.forEach(r => {
@@ -820,6 +879,60 @@ tr:hover td { background: rgba(255,255,255,0.02); }
     if (sqlQuery) {
       appendMeta([`🗄 ${sqlQuery}`]);
     }
+  }
+
+  function appendSqlApproval(data) {
+    const area = document.getElementById("chat-area");
+    const row  = document.createElement("div");
+    row.className = "msg-row bot";
+    row.id = "approval-" + data.approval_id;
+    row.innerHTML = `
+      <div class="msg-label">FinSolve Assistant - SQL Approval</div>
+      <div class="bubble bot">
+        <div>${esc(data.answer)}</div>
+        <pre style="white-space:pre-wrap;margin:10px 0 0;font-family:var(--font-mono);font-size:12px;">${esc(data.query)}</pre>
+        <div class="approval-actions">
+          <button class="approval-btn primary" onclick="approveSql('${data.approval_id}', true)">Approve</button>
+          <button class="approval-btn" onclick="approveSql('${data.approval_id}', false)">Reject</button>
+        </div>
+      </div>`;
+    area.appendChild(row);
+  }
+
+  async function approveSql(approvalId, approved) {
+    const container = document.getElementById("approval-" + approvalId);
+    if (container) {
+      container.querySelectorAll("button").forEach(btn => btn.disabled = true);
+    }
+
+    const typingId = appendTyping();
+    try {
+      const res = await fetch("/sql/approve", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "authorization": token
+        },
+        body: JSON.stringify({ approval_id: approvalId, approved })
+      });
+
+      removeTyping(typingId);
+      if (res.status === 401) { logout(); return; }
+
+      const data = await res.json();
+      if (!res.ok) {
+        appendWarning(data.detail || "SQL approval failed.");
+      } else if (data.type === "table") {
+        appendTable(data.columns, data.rows, data.query);
+      } else {
+        appendBotMsg(data.answer);
+      }
+    } catch (e) {
+      removeTyping(typingId);
+      appendWarning("Network error. Please try again.");
+    }
+
+    scrollBottom();
   }
 
   function appendTyping() {
@@ -852,6 +965,61 @@ tr:hover td { background: rgba(255,255,255,0.02); }
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;")
       .replace(/\n/g, "<br>");
+  }
+
+  function escInline(str) {
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function renderInlineMarkdown(str) {
+    return escInline(str).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  }
+
+  function renderBotText(text) {
+    const lines = String(text).split(/\r?\n/);
+    const blocks = [];
+    let paragraph = [];
+    let list = [];
+
+    function flushParagraph() {
+      if (paragraph.length) {
+        blocks.push(`<p>${renderInlineMarkdown(paragraph.join(" "))}</p>`);
+        paragraph = [];
+      }
+    }
+
+    function flushList() {
+      if (list.length) {
+        blocks.push(`<ul>${list.map(item => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</ul>`);
+        list = [];
+      }
+    }
+
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line) {
+        flushParagraph();
+        flushList();
+        continue;
+      }
+
+      const bullet = line.match(/^(?:[-*]|\u2022)\s+(.*)$/);
+      if (bullet) {
+        flushParagraph();
+        list.push(bullet[1]);
+      } else {
+        flushList();
+        paragraph.push(line);
+      }
+    }
+
+    flushParagraph();
+    flushList();
+    return blocks.join("");
   }
 </script>
 </body>

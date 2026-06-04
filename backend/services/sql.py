@@ -1,14 +1,18 @@
 import sqlite3
+from pathlib import Path
+
 import pandas as pd
 
-CSV_PATH = "resources/data/hr/hr_data.csv"
-conn = sqlite3.connect("employees.db", check_same_thread=False)
+PROJECT_DIR = Path(__file__).resolve().parents[2]
+CSV_PATH = PROJECT_DIR / "resources" / "data" / "hr" / "hr_data.csv"
+DB_PATH = PROJECT_DIR / "employees.db"
+conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 
 
 def init_db():
     df = pd.read_csv(CSV_PATH)
     df.to_sql("employees", conn, if_exists="replace", index=False)
-    print("✅ SQLite employees DB initialized.")
+    print("SQLite employees DB initialized.")
 
 
 def get_columns():

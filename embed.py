@@ -1,4 +1,8 @@
 import os
+from pathlib import Path
+
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
+
 import hashlib
 import shutil
 import pandas as pd
@@ -7,19 +11,26 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import SentenceTransformerEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain.schema import Document
+from chromadb.config import Settings
+from backend.services.cache import CachedEmbeddings
 
 # -------------------------------
 # Configuration
 # -------------------------------
-BASE_DIR   = "resources/data"
-CHROMA_DIR = "chroma_db"
+PROJECT_DIR = Path(__file__).resolve().parent
+BASE_DIR = PROJECT_DIR / "resources" / "data"
+CHROMA_DIR = PROJECT_DIR / "chroma_db"
+EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 
 # Known departments
 DEPARTMENTS = ["engineering", "finance", "general", "hr", "marketing"]
 
-embedding_model = SentenceTransformerEmbeddings(model_name="all-MiniLM-L6-v2")
+embedding_model = CachedEmbeddings(
+    SentenceTransformerEmbeddings(model_name=EMBEDDING_MODEL),
+    model_cache_id=EMBEDDING_MODEL,
+)
 
-# Markdown/CSV-aware splitter — respects heading boundaries
+# Markdown/CSV-aware splitter - respects heading boundaries
 md_splitter = RecursiveCharacterTextSplitter(
     chunk_size=500,
     chunk_overlap=50,
@@ -49,24 +60,25 @@ def deduplicate(docs: list) -> list:
 all_split_docs = []
 
 for department in DEPARTMENTS:
-    dept_path = os.path.join(BASE_DIR, department)
+    dept_path = BASE_DIR / department
 
-    if not os.path.isdir(dept_path):
-        print(f"⚠️  Folder not found, skipping: {dept_path}")
+    if not dept_path.is_dir():
+        print(f"Folder not found, skipping: {dept_path}")
         continue
 
-    print(f"\n🔍 Processing: {department}")
+    print(f"\nProcessing: {department}")
     dept_docs = []
 
-    for file in sorted(os.listdir(dept_path)):
-        file_path = os.path.join(dept_path, file)
-        file_ext  = os.path.splitext(file)[-1].lower()
+    for path in sorted(dept_path.iterdir()):
+        file = path.name
+        file_path = str(path)
+        file_ext = path.suffix.lower()
 
         # -------------------------------
         # Handle CSV files
         # -------------------------------
         if file_ext == ".csv":
-            print(f"   📄 Loading CSV for embedding: {file}")
+            print(f"   Loading CSV for embedding: {file}")
             try:
                 df = pd.read_csv(file_path)
                 for _, row in df.iterrows():
@@ -82,16 +94,16 @@ for department in DEPARTMENTS:
                         }
                     )
                     dept_docs.append(doc)
-                print(f"   ✅ Loaded {len(df)} rows from {file}")
+                print(f"   Loaded {len(df)} rows from {file}")
             except Exception as e:
-                print(f"   ❌ Failed to load CSV {file}: {e}")
+                print(f"   Failed to load CSV {file}: {e}")
             continue
 
         # -------------------------------
         # Handle Markdown files
         # -------------------------------
         if file_ext != ".md":
-            print(f"   ⏭️  Skipping unsupported file type: {file}")
+            print(f"   Skipping unsupported file type: {file}")
             continue
 
         try:
@@ -109,13 +121,13 @@ for department in DEPARTMENTS:
                 doc.metadata["category"]  = department.lower()
 
             dept_docs.extend(docs)
-            print(f"   📄 Loaded: {file} ({len(docs)} doc(s))")
+            print(f"   Loaded: {file} ({len(docs)} doc(s))")
 
         except Exception as e:
-            print(f"   ❌ Failed to load {file}: {e}")
+            print(f"   Failed to load {file}: {e}")
 
     if not dept_docs:
-        print(f"   ⚠️  No documents loaded for: {department}")
+        print(f"   No documents loaded for: {department}")
         continue
 
     # -------------------------------
@@ -128,23 +140,24 @@ for department in DEPARTMENTS:
     # -------------------------------
     split_docs = deduplicate(split_docs)
     all_split_docs.extend(split_docs)
-    print(f"   ✅ {len(split_docs)} unique chunks stored for: {department}")
+    print(f"   {len(split_docs)} unique chunks stored for: {department}")
 
 # -------------------------------
 # Build Chroma DB
 # -------------------------------
 if not all_split_docs:
-    print("\n❌ No documents to embed. Check your resources/data folders.")
+    print("\nNo documents to embed. Check your resources/data folders.")
     exit(1)
 
-print(f"\n⚙️  Building Chroma DB with {len(all_split_docs)} total chunks...")
+print(f"\nBuilding Chroma DB with {len(all_split_docs)} total chunks...")
 shutil.rmtree(CHROMA_DIR, ignore_errors=True)
 
 db = Chroma.from_documents(
     documents=all_split_docs,
     embedding=embedding_model,
-    persist_directory=CHROMA_DIR,
-    collection_name="company_docs"
+    persist_directory=str(CHROMA_DIR),
+    collection_name="company_docs",
+    client_settings=Settings(anonymized_telemetry=False),
 )
 
 # -------------------------------
@@ -154,10 +167,10 @@ stored        = db._collection.get()
 roles_found   = sorted({m.get("role", "?") for m in stored["metadatas"]})
 sources_found = sorted({m.get("source", "?") for m in stored["metadatas"]})
 
-print(f"\n🎉 Embedding complete!")
+print(f"\nEmbedding complete!")
 print(f"   Total chunks  : {len(stored['ids'])}")
 print(f"   Roles indexed : {roles_found}")
 print(f"   Files indexed : {sources_found}")
-print(f"\n📋 Sample metadata (first 3):")
+print(f"\nSample metadata (first 3):")
 for meta in stored["metadatas"][:3]:
     print(f"   {meta}")

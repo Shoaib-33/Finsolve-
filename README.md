@@ -1,259 +1,241 @@
-# FinSolve RAG API
+# FinSolve Internal Assistant
 
-An enterprise-grade **Retrieval-Augmented Generation (RAG)** system built for FinSolve Technologies. Provides role-based intelligent Q&A over internal documents and structured employee data, with full observability, evaluation, and guardrails.
+Role-aware enterprise chatbot for FinSolve Technologies. The system supports secure document Q&A, HR-only Text2SQL over employee data, Self-RAG validation, Redis-backed caching, and request-side guardrails.
 
----
+## Features
 
-## 🚀 Features
+- **Role-based access control**
+  - `general`: general documents
+  - `engineering`: engineering + general documents
+  - `finance`: finance + general documents
+  - `marketing`: marketing + general documents
+  - `hr`: all documents + SQL access
 
-- **LLM-Based Query Router** — Automatically classifies queries as SQL or RAG
-- **Hybrid Retrieval (BM25 + Dense)** — Combines keyword and semantic search with Reciprocal Rank Fusion (RRF)
-- **Cross-Encoder Reranking** — Re-scores retrieved chunks for maximum relevance
-- **Query Rewriting** — Expands and clarifies user queries before retrieval
-- **Hallucination Guardrail** — Checks answer faithfulness against retrieved context
-- **Role-Based Access Control** — Filters documents and SQL access by user role
-- **Conversation Memory** — Maintains per-session chat history (last 10 messages)
-- **Multi-format Ingestion** — Supports Markdown and CSV files across departments
-- **LangSmith Tracing** — Full observability of every LLM call and pipeline step
-- **RAGAS Evaluation** — Automatic RAG quality scoring (faithfulness, answer relevancy)
-- **Comprehensive Guardrails** — PII detection, blocked topics, out-of-scope protection
-- **Prometheus + Grafana** — Real-time API monitoring and dashboards
+- **Document Q&A with Self-RAG**
+  - Query rewriting
+  - Role-scoped retrieval
+  - BM25 keyword retrieval
+  - Chroma dense retrieval when available
+  - RRF result fusion
+  - Cross-encoder reranking
+  - Document usefulness grading
+  - Answer faithfulness check
+  - Answer usefulness check
+  - One retry with rewritten query when answer quality is weak
 
----
+- **HR Text2SQL pipeline**
+  - Gemini-based SQL generation
+  - SQLite schema-aware prompting
+  - SELECT-only validation
+  - SQL blocklist enforcement
+  - Human approval before execution
+  - SQL result formatting
+  - Follow-up SQL context memory
 
-## 🏗️ Architecture
+- **Request-side security pipeline**
+  - Pydantic request validation
+  - Session authentication
+  - Role context enforcement
+  - Per-user rate limit
+  - Daily token budget
+  - Input length cap
+  - Prompt-injection scan
+  - Harmful-content scan
+  - PII masking before LLM calls
 
+- **Output safety**
+  - Role-aware PII redaction
+  - Blocked-topic handling
+  - Cross-department confidential data protection
+
+- **Upstash Redis cache**
+  - SHA-256 exact-match cache keys
+  - Logical 5-tier cache:
+    - Embedding cache: 7 days
+    - Intent router cache: 24 hours
+    - SQL generation cache: 24 hours
+    - SQL result cache: 15 minutes
+    - RAG answer cache: 1 hour
+
+- **Web application**
+  - Login screen
+  - Role display
+  - Chat UI
+  - SQL approval cards
+  - SQL result tables
+  - Source display
+  - Formatted assistant responses
+
+- **Operational endpoints**
+  - `/health`
+  - `/metrics`
+
+## Architecture
+
+```mermaid
+flowchart TD
+    U[User] --> UI[Web UI]
+    UI --> API[FastAPI Backend]
+    API --> SEC[Request Security Pipeline]
+    SEC --> ROUTER[Gemini Intent Router]
+    ROUTER -->|Document question| RAG[Self-RAG Pipeline]
+    ROUTER -->|Employee data question| SQL[Text2SQL Pipeline]
+    RAG --> DOCS[Department Documents]
+    RAG --> CACHE[Upstash Redis Cache]
+    SQL --> DB[(SQLite employees.db)]
+    SQL --> CACHE
+    RAG --> API
+    SQL --> API
+    API --> UI
 ```
-User Query
-    │
-    ▼
-Input Guardrails (PII check, blocked topics, out-of-scope)
-    │
-    ▼
-LLM Query Router
-    │
-    ├── SQL Path (HR only)
-    │       └── LLM generates SQLite query → runs against employees table → returns table
-    │
-    └── RAG Path
-            ├── Query Rewriting (LLM)
-            ├── Hybrid Retrieval: BM25 + Dense (Chroma) with RRF fusion
-            ├── Cross-Encoder Reranking (top 5 chunks)
-            ├── LLM Answer Generation (role-scoped prompt)
-            ├── Hallucination Check (faithfulness verdict)
-            ├── Output Guardrails (PII scrubbing)
-            └── RAGAS Evaluation (background thread → LangSmith)
+
+## Request Security Pipeline
+
+```mermaid
+flowchart LR
+    A[Pydantic Validation] --> B[Session Auth]
+    B --> C[Role Context]
+    C --> D[Rate Limit]
+    D --> E[Token Budget]
+    E --> F[Input Length Cap]
+    F --> G[Prompt Injection Scan]
+    G --> H[Harmful Content Scan]
+    H --> I[PII Masking]
+    I --> J[Intent Router]
 ```
 
----
+## Self-RAG Pipeline
 
-## 🛠️ Tech Stack
+```mermaid
+flowchart TD
+    Q[User Query] --> RW[Rewrite Query]
+    RW --> RET[Role-Scoped Retrieval]
+    RET --> RRF[BM25 + Dense + RRF]
+    RRF --> RR[Cross-Encoder Rerank]
+    RR --> GD[Grade Retrieved Docs]
+    GD --> GEN[Generate Answer with Gemini]
+    GEN --> GF[Faithfulness Check]
+    GEN --> GU[Usefulness Check]
+    GF --> DEC{Good Answer?}
+    GU --> DEC
+    DEC -->|Yes| OUT[Return Answer + Sources]
+    DEC -->|No| REWRITE[Rewrite and Retry Once]
+    REWRITE --> RET
+```
 
-| Component | Technology |
+## Text2SQL Pipeline
+
+```mermaid
+flowchart TD
+    Q[HR User Query] --> G[Generate SQL with Gemini]
+    G --> V[Validate SQL]
+    V -->|SELECT only| A[Pending Approval]
+    V -->|Unsafe| B[Block Request]
+    A -->|Approved| E[Execute SQLite SELECT]
+    A -->|Rejected| C[Cancel Execution]
+    E --> F[Format Table Result]
+```
+
+## Redis Cache Layers
+
+```mermaid
+flowchart LR
+    A[Embedding Cache<br/>TTL 7d] --> B[Intent Router Cache<br/>TTL 24h]
+    B --> C[SQL Gen Cache<br/>TTL 24h]
+    C --> D[SQL Result Cache<br/>TTL 15m]
+    D --> E[RAG Answer Cache<br/>TTL 1h]
+```
+
+## Tech Stack
+
+| Area | Technology |
 |---|---|
-| API Framework | FastAPI |
-| LLM | Gemini 2.5 Flash (via Google AI) |
-| LLM Orchestration | LangChain |
-| Tracing & Observability | LangSmith |
-| RAG Evaluation | RAGAS |
-| Vector Store | ChromaDB |
-| Embeddings | all-MiniLM-L6-v2 (SentenceTransformers) |
-| Keyword Retrieval | BM25 (LangChain Community) |
-| Reranker | cross-encoder/ms-marco-MiniLM-L-6-v2 |
-| Structured Data | SQLite |
-| Metrics | Prometheus + Grafana |
-| Containerization | Docker + Docker Compose |
-| Templating | Jinja2 |
+| Backend | FastAPI |
+| UI | HTML, CSS, JavaScript, Jinja2 |
+| LLM | Gemini via `langchain-google-genai` |
+| RAG | LangChain, BM25, ChromaDB, RRF |
+| Embeddings | SentenceTransformers `all-MiniLM-L6-v2` |
+| Reranking | `cross-encoder/ms-marco-MiniLM-L-6-v2` |
+| SQL Store | SQLite |
+| Cache | Upstash Redis |
+| Metrics | Prometheus FastAPI Instrumentator |
 
----
+## Project Structure
 
-## 📁 Project Structure
-
-```
-├── backend/
-│   ├── main.py                 # FastAPI app, routes, chat logic
-│   └── services/
-│       ├── auth.py             # User authentication
-│       ├── rag.py              # Hybrid retrieval, reranking, rewriting, guardrails
-│       └── sql.py              # SQLite init and query execution
-├── resources/
-│   └── data/
-│       ├── engineering/        # Department-specific documents
-│       ├── finance/
-│       ├── general/
-│       ├── hr/
-│       └── marketing/
-├── templates/
-│   └── index.html              # Frontend UI
-├── chroma_db/                  # Persisted vector store (generated at build)
-├── embed.py                    # Document ingestion pipeline
-├── retriever.py                # ChromaDB retriever setup
-├── employees.db                # SQLite employee database
-├── docker-compose.yml          # App + Prometheus + Grafana
-├── prometheus.yml              # Prometheus scrape config
-├── Dockerfile                  # Container build
-└── requirements.txt            # Python dependencies
+```text
+backend/
+  main.py                  FastAPI routes and request flow
+  services/
+    auth.py                Static user authentication
+    cache.py               Upstash Redis cache helpers
+    rag.py                 Retrieval, Self-RAG, guardrails
+    security.py            Request-side security pipeline
+    sql.py                 SQLite initialization and execution
+    sql_pipeline.py        Text2SQL generation, validation, approval
+resources/data/            Department documents and HR CSV data
+templates/index.html       Web UI
+embed.py                   Chroma ingestion script
+retriever.py               Vector store and user definitions
+requirements.txt           Python dependencies
 ```
 
----
+## Environment
 
-## ⚙️ Getting Started
-
-### Prerequisites
-- Python 3.11+
-- Docker + Docker Compose
-- A Gemini API key
-- A LangSmith API key (optional, for tracing)
-
-### Installation
-
-```bash
-git clone https://github.com/Shoaib-33/Finsolve-.git
-cd Finsolve-
-```
-
-### Environment Setup
-
-Create a `.env` file in the project root (see `.env.example`):
+Create `.env` in the project root:
 
 ```env
-GEMINI_API_KEY=your_gemini_api_key_here
-LANGCHAIN_API_KEY=your_langsmith_api_key_here
-LANGCHAIN_TRACING_V2=true
-LANGCHAIN_PROJECT=finsolve-rag
+GEMINI_API_KEY=your_gemini_api_key
+UPSTASH_REDIS_REST_URL=your_upstash_rest_url
+UPSTASH_REDIS_REST_TOKEN=your_upstash_rest_token
 ```
 
-### Run with Docker Compose
+Upstash variables are optional. If they are missing, the application runs without Redis caching.
 
-```bash
-docker-compose up -d --build
+## Local Run
+
+```powershell
+cd "d:\Finsolve-\Modified Finsole\Finsolve-"
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe embed.py
+.\.venv\Scripts\python.exe -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 ```
 
-This starts 3 services:
+Open:
 
-| Service | URL |
-|---|---|
-| FinSolve API | http://localhost:8000 |
-| Prometheus | http://localhost:9090 |
-| Grafana | http://localhost:3000 |
-
----
-
-## 🔄 Pipeline Flow
-
-```
-User Query
-    ↓
-Input Guardrails (regex + LLM)
-    ↓
-Query Rewriting
-    ↓
-Hybrid Retrieve (BM25 + Dense, RRF fusion)
-    ↓
-Rerank top 5 docs
-    ↓
-Build prompt with context + chat history
-    ↓
-LLM generates answer
-    ↓
-Hallucination check
-    ↓
-Output Guardrails (PII scrubbing)
-    ↓
-Return answer + sources + faithfulness flag
-    ↓ (background)
-RAGAS evaluation → LangSmith feedback
+```text
+http://127.0.0.1:8000
 ```
 
----
+## Demo Users
 
-## 🛡️ Guardrails
-
-### Input Guardrails (before RAG runs)
-
-| Check | Method | Blocks |
+| Username | Password | Role |
 |---|---|---|
-| Blocked topics | Regex (free) | hack, exploit, sql injection, jailbreak... |
-| PII in query | Regex (free) | email, phone, NID, passport, credit card |
-| Out-of-scope | LLM check | Cross-department confidential data |
+| alice | hr123 | hr |
+| bob | eng123 | engineering |
+| carol | fin123 | finance |
+| admin | admin123 | general |
 
-### Output Guardrails (before answer is returned)
-
-| Role | Redaction |
-|---|---|
-| HR | Credit card, passport, IP address |
-| All others | Full PII redaction |
-
----
-
-## 📊 Observability
-
-### LangSmith
-Every LLM call is automatically traced. View full pipeline traces at [smith.langchain.com](https://smith.langchain.com) under project `finsolve-rag`.
-
-### RAGAS Evaluation
-Runs automatically in the background after every RAG response:
-- `faithfulness` — Is the answer supported by retrieved docs?
-- `answer_relevancy` — Does the answer address the question?
-
-Scores are logged back to LangSmith per request.
-
-### Prometheus + Grafana
-- Metrics exposed at `/metrics`
-- Prometheus scrapes every 15 seconds
-- Grafana dashboard shows request rate, latency p95, error rate, endpoint breakdown
-
----
-
-## 🔐 Role-Based Access
-
-| Role | RAG Access | SQL Access |
-|---|---|---|
-| general | General documents only | ❌ |
-| engineering | Engineering + General docs | ❌ |
-| finance | Finance + General docs | ❌ |
-| marketing | Marketing + General docs | ❌ |
-| hr | All documents | ✅ |
-
----
-
-## 📡 API Endpoints
+## API Endpoints
 
 | Method | Endpoint | Description |
 |---|---|---|
 | GET | `/` | Web UI |
-| POST | `/login` | Authenticate and receive session token |
+| POST | `/login` | Login and receive session token |
 | POST | `/logout` | Invalidate session |
-| POST | `/chat` | Submit a query (requires Authorization header) |
+| POST | `/chat` | Submit a user query |
+| POST | `/sql/approve` | Approve or reject pending SQL |
 | GET | `/health` | Health check |
 | GET | `/metrics` | Prometheus metrics |
 
-### Login
-```bash
-POST /login
-{
-  "username": "alice",
-  "password": "password123"
-}
-```
+## Security Notes
 
-### Chat
-```bash
-POST /chat
-Authorization: <session-token>
-{
-  "query": "What is the leave policy for engineering staff?"
-}
-```
+- SQL execution is restricted to HR users.
+- SQL mutation requests are blocked before generation and before execution.
+- Only validated `SELECT` statements can reach the approval stage.
+- Prompt-injection and harmful-content patterns are blocked before routing.
+- PII is masked before LLM calls and scrubbed from output based on role.
+- Redis cache keys use SHA-256 exact-match hashing.
 
----
-
-## 📹 Demo
-
-[Watch on YouTube](https://youtu.be/mcl03F1ANpo)
-
----
-
-## 📄 License
+## License
 
 MIT

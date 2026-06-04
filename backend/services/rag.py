@@ -1,8 +1,23 @@
 import re
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
 from retriever import db
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.retrievers import BM25Retriever
 from langchain.schema import Document
 from sentence_transformers import CrossEncoder
+
+
+PROJECT_DIR = Path(__file__).resolve().parents[2]
+RESOURCES_DIR = PROJECT_DIR / "resources" / "data"
+DEPARTMENTS = ["engineering", "finance", "general", "hr", "marketing"]
+md_splitter = RecursiveCharacterTextSplitter(
+    chunk_size=500,
+    chunk_overlap=50,
+    separators=["\n## ", "\n### ", "\n\n", "\n", " "],
+)
 
 # -------------------------------
 # Reranker
@@ -22,6 +37,46 @@ def rerank(query: str, docs: list, top_k: int = 5) -> list:
 # -------------------------------
 # BM25 per role — built once at startup
 # -------------------------------
+def load_resource_docs() -> list:
+    docs = []
+    for department in DEPARTMENTS:
+        dept_path = RESOURCES_DIR / department
+        if not dept_path.is_dir():
+            continue
+
+        for path in sorted(dept_path.iterdir()):
+            file_ext = path.suffix.lower()
+            if file_ext == ".csv":
+                try:
+                    df = pd.read_csv(path)
+                    for _, row in df.iterrows():
+                        text = "\n".join([f"{col}: {row[col]}" for col in df.columns])
+                        docs.append(Document(
+                            page_content=text,
+                            metadata={
+                                "source": path.name,
+                                "file_type": ".csv",
+                                "role": department,
+                                "category": department,
+                            },
+                        ))
+                except Exception:
+                    continue
+            elif file_ext == ".md":
+                text = path.read_text(encoding="utf-8")
+                docs.append(Document(
+                    page_content=text,
+                    metadata={
+                        "source": path.name,
+                        "file_type": ".md",
+                        "role": department,
+                        "category": department,
+                    },
+                ))
+
+    return md_splitter.split_documents(docs)
+
+
 def init_bm25_by_role() -> dict:
     stored = db.get()
     role_docs = {}
@@ -30,6 +85,13 @@ def init_bm25_by_role() -> dict:
         if role not in role_docs:
             role_docs[role] = []
         role_docs[role].append(Document(page_content=text, metadata=meta))
+
+    if not role_docs:
+        for doc in load_resource_docs():
+            role = doc.metadata.get("role", "general")
+            if role not in role_docs:
+                role_docs[role] = []
+            role_docs[role].append(doc)
 
     return {
         role: BM25Retriever.from_documents(docs)
@@ -44,17 +106,21 @@ bm25_by_role = init_bm25_by_role()
 # Hybrid Retrieval with RRF
 # -------------------------------
 def hybrid_retrieve(query: str, role: str, top_k: int = 50, k: int = 60) -> list:
+    retrieval_query = expand_retrieval_query(query)
     bm25_docs = []
-    if role in bm25_by_role:
-        bm25_docs = bm25_by_role[role].get_relevant_documents(query)
+    accessible_roles = DEPARTMENTS if role.lower() == "hr" else [role, "general"]
+    for accessible_role in accessible_roles:
+        if accessible_role in bm25_by_role:
+            bm25_docs.extend(bm25_by_role[accessible_role].get_relevant_documents(retrieval_query))
 
-    dense_role = db.as_retriever(
-        search_kwargs={"filter": {"role": role}, "k": top_k}
-    ).get_relevant_documents(query)
-
-    dense_general = db.as_retriever(
-        search_kwargs={"filter": {"role": "general"}, "k": top_k}
-    ).get_relevant_documents(query)
+    dense_docs = []
+    try:
+        for accessible_role in accessible_roles:
+            dense_docs.extend(db.as_retriever(
+                search_kwargs={"filter": {"role": accessible_role}, "k": top_k}
+            ).get_relevant_documents(retrieval_query))
+    except Exception:
+        dense_docs = []
 
     rrf_scores = {}
 
@@ -65,12 +131,21 @@ def hybrid_retrieve(query: str, role: str, top_k: int = 50, k: int = 60) -> list
                 rrf_scores[key] = {"score": 0.0, "doc": doc}
             rrf_scores[key]["score"] += weight * (1 / (k + rank + 1))
 
-    add_to_rrf(bm25_docs,     weight=1.0)
-    add_to_rrf(dense_role,    weight=1.0)
-    add_to_rrf(dense_general, weight=0.8)
+    add_to_rrf(bm25_docs, weight=1.0)
+    add_to_rrf(dense_docs, weight=1.0)
 
     sorted_docs = sorted(rrf_scores.values(), key=lambda x: x["score"], reverse=True)
     return [entry["doc"] for entry in sorted_docs[:top_k]]
+
+
+def expand_retrieval_query(query: str) -> str:
+    query_lower = query.lower()
+    if "architecture" in query_lower and re.search(r"\b(layer|layers|component|components)\b", query_lower):
+        return (
+            f"{query} High-Level Architecture Client Apps API Gateway "
+            "Microservices Layer Data Layer Infrastructure Layer"
+        )
+    return query
 
 
 # -------------------------------
@@ -95,6 +170,163 @@ Context: {context}
 Answer: {answer}"""
     verdict = llm.invoke(prompt).content.strip().upper()
     return verdict == "YES"
+
+
+# -------------------------------
+# Self-RAG
+# -------------------------------
+def grade_retrieved_docs(query: str, docs: list, llm, max_docs: int = 8) -> list:
+    """
+    Self-RAG retrieval grading. Keeps only docs the LLM judges useful for the
+    user question. Fails open so retrieval still works if the grader errors.
+    """
+    if not docs:
+        return []
+
+    candidates = docs[:max_docs]
+    snippets = []
+    for index, doc in enumerate(candidates, start=1):
+        snippet = doc.page_content[:900].replace("\n", " ")
+        source = doc.metadata.get("source", "Unknown")
+        snippets.append(f"[{index}] source={source}\n{snippet}")
+
+    prompt = f"""You are a retrieval grader for a corporate RAG system.
+
+Question:
+{query}
+
+Candidate document snippets:
+{chr(10).join(snippets)}
+
+Return only the numbers of snippets that contain information useful for answering the question.
+Use comma-separated numbers like: 1,3,5
+If none are useful, return NONE."""
+
+    try:
+        verdict = llm.invoke(prompt).content.strip().upper()
+        if verdict == "NONE":
+            return []
+        selected = {int(match) for match in re.findall(r"\d+", verdict)}
+        filtered = [doc for index, doc in enumerate(candidates, start=1) if index in selected]
+        return filtered or candidates
+    except Exception:
+        return candidates
+
+
+def generate_answer_from_docs(query: str, role: str, history: list, docs: list, llm) -> str:
+    context = "\n\n".join([d.page_content for d in docs])
+    history_text = "\n".join(
+        f"{'User' if m['role']=='user' else 'Bot'}: {m['content']}"
+        for m in history[-10:]
+    )
+
+    prompt = f"""You are a helpful AI assistant at FinSolve Technologies. The user has the role: {role}.
+
+Conversation History:
+{history_text}
+
+Instructions:
+1) Answer using ONLY the provided context below.
+2) If the context contains the answer, always answer it, regardless of the user's role.
+3) Only say "I'm not authorized to answer that" if the question asks for another department's CONFIDENTIAL data.
+4) If the context does not contain relevant information, respond with "I don't have that information."
+5) Always keep answers concise and to the point.
+
+Context:
+{context}
+
+Question: {query}"""
+
+    return llm.invoke(prompt).content
+
+
+def grade_answer_usefulness(query: str, answer: str, llm) -> bool:
+    prompt = f"""You are an answer grader.
+Determine whether the answer directly addresses the user's question.
+Reply with only YES or NO.
+
+Question: {query}
+Answer: {answer}"""
+    try:
+        return llm.invoke(prompt).content.strip().upper() == "YES"
+    except Exception:
+        return True
+
+
+def rewrite_after_failed_answer(query: str, previous_query: str, answer: str, llm) -> str:
+    prompt = f"""Rewrite the user's question for a better corporate document search.
+The previous retrieval attempt did not produce a sufficiently supported answer.
+Return only the rewritten search query.
+
+Original question: {query}
+Previous search query: {previous_query}
+Previous answer: {answer}"""
+    try:
+        return llm.invoke(prompt).content.strip()
+    except Exception:
+        return previous_query
+
+
+def run_self_rag_answer(query: str, role: str, history: list, llm, max_retries: int = 1) -> dict[str, Any]:
+    search_query = rewrite_query(query, llm)
+    last_answer = ""
+    last_docs = []
+    attempts = 0
+
+    for attempt in range(max_retries + 1):
+        attempts = attempt + 1
+        docs = hybrid_retrieve(search_query, role, top_k=50)
+        docs = rerank(search_query, docs, top_k=8)
+        docs = grade_retrieved_docs(query, docs, llm, max_docs=8)
+        docs = rerank(search_query, docs, top_k=5)
+        last_docs = docs
+
+        if not docs:
+            last_answer = "I don't have relevant information to answer that."
+            if attempt < max_retries:
+                search_query = rewrite_after_failed_answer(query, search_query, last_answer, llm)
+                continue
+            break
+
+        context = "\n\n".join([d.page_content for d in docs])
+        answer = generate_answer_from_docs(query, role, history, docs, llm)
+        faithful = check_faithfulness(context, answer, llm)
+        useful = grade_answer_usefulness(query, answer, llm)
+        last_answer = answer
+
+        if faithful and useful:
+            sources = list({d.metadata.get("source", "Unknown") for d in docs})
+            return {
+                "type": "text",
+                "answer": run_output_guardrails(answer, role),
+                "rewritten_query": search_query,
+                "sources": sources,
+                "faithful": faithful,
+                "self_rag": {
+                    "attempts": attempts,
+                    "docs_used": len(docs),
+                    "answer_useful": useful,
+                },
+            }
+
+        if attempt < max_retries:
+            search_query = rewrite_after_failed_answer(query, search_query, answer, llm)
+
+    sources = list({d.metadata.get("source", "Unknown") for d in last_docs})
+    context = "\n\n".join([d.page_content for d in last_docs])
+    faithful = check_faithfulness(context, last_answer, llm) if context and last_answer else True
+    return {
+        "type": "text",
+        "answer": run_output_guardrails(last_answer, role),
+        "rewritten_query": search_query,
+        "sources": sources,
+        "faithful": faithful,
+        "self_rag": {
+            "attempts": attempts,
+            "docs_used": len(last_docs),
+            "answer_useful": False,
+        },
+    }
 
 
 # ================================================================
